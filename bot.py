@@ -3,6 +3,9 @@ import time
 from datetime import datetime
 import random
 import traceback
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
 
 # 🛑 الإعدادات الأساسية
 TELEGRAM_TOKEN = "8865376059:AAHuQB3cjCFMF03U0jQygqsENzQDKmMpQOk"
@@ -67,7 +70,7 @@ def start_monitor():
             total_cash_val = 0.0
             branch_cash_diffs = {}
             
-            # 3. مراقبة الفروع (إغلاق الفروع فقط بدون إزعاج التأخيرات)
+            # 3. مراقبة الفروع (إغلاق الفروع فقط)
             for branch_name, info in dashboard_data.items():
                 if not isinstance(info, dict): continue
                 
@@ -77,7 +80,6 @@ def start_monitor():
                 server_last_c = float(global_memory.get(branch_name, 0.0))
                 actual_c = raw_c
                 
-                # إغلاق الفرع و الإشعارات
                 if raw_c > 0:
                     if branch_name in closed_branches:
                         delete_json(f"{FIREBASE_URL}/Closed_Branches/{branch_name}.json")
@@ -129,8 +131,29 @@ def start_monitor():
             print(f"Monitor Loop Error: {e}")
             traceback.print_exc()
 
-        # انتظار 5 ثواني قبل فحص السيرفر مرة أخرى
         time.sleep(5)
 
+# ==========================================
+# سيرفر ويب وهمي لخداع موقع Render (للحصول على الاستضافة المجانية)
+# ==========================================
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"Amana Bot is Running 24/7!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    print(f"Dummy web server started on port {port}")
+    server.serve_forever()
+
 if __name__ == "__main__":
-    start_monitor()
+    # تشغيل البوت في مسار (Thread) منفصل
+    bot_thread = threading.Thread(target=start_monitor)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # تشغيل سيرفر الويب الوهمي في المسار الأساسي
+    run_dummy_server()
