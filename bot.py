@@ -45,6 +45,7 @@ def start_monitor():
     print("🚀 بدء تشغيل المراقب الذكي يعمل الآن 24/7...")
     send_telegram_alert("🤖 تم تشغيل سيرفر المراقبة الذكي (مجوهرات الأمانة) بنجاح ويعمل الآن 24/7.")
     client_device_id = f"render_server_{int(time.time())}_{random.randint(1000, 9999)}"
+    branch_tracker = {}
     
     while True:
         try:
@@ -56,9 +57,13 @@ def start_monitor():
             
             closed_branches_db = get_json(f"{FIREBASE_URL}/Closed_Branches.json") or {}
             if not isinstance(closed_branches_db, dict): closed_branches_db = {}
+
+            server_tracker = get_json(f"{FIREBASE_URL}/Branch_Tracker.json") or {}
+            if not isinstance(server_tracker, dict): server_tracker = {}
             
             # 1. تصفير الكاش يومياً الساعة 5 الفجر بتوقيت مصر
             now_dt = datetime.now(CAIRO_TZ)
+            current_time = now_dt.strftime("%I:%M:%S %p")
             today_str = now_dt.strftime("%Y-%m-%d")
             if now_dt.hour == 5 and now_dt.minute <= 5:
                 check_sent = get_json(f"{FIREBASE_URL}/System_Flags/Report_{today_str}.json")
@@ -66,15 +71,19 @@ def start_monitor():
                     put_json(f"{FIREBASE_URL}/System_Flags/Report_{today_str}.json", {"sent": True})
                     delete_json(f"{FIREBASE_URL}/Global_Last_Cash.json")
                     delete_json(f"{FIREBASE_URL}/Closed_Branches.json")
+                    delete_json(f"{FIREBASE_URL}/Branch_Tracker.json")
                     put_json(f"{FIREBASE_URL}/System_Flags/Last_Alert_Level.json", 0)
                     global_memory.clear()
                     closed_branches_db.clear()
+                    server_tracker.clear()
+                    branch_tracker.clear()
                     send_telegram_alert("🔄 تم تصفير الكاش وبدء يوم عمل جديد بنجاح (الساعة 5 فجراً).")
             
             total_cash_val = 0.0
             branch_cash_diffs = {}
+            current_bot_time = time.time()
             
-            # 2. التحديث التلقائي وتقفيل الفروع
+            # 2. التحديث التلقائي وتقفيل الفروع وحفظ حالة التوقف في الفايربيز
             for branch_name, info in dashboard_data.items():
                 if not isinstance(info, dict): continue
                 try:
@@ -84,6 +93,7 @@ def start_monitor():
                 
                 server_last_c = float(global_memory.get(branch_name, 0.0))
                 actual_c = raw_c
+                is_finished = False
                 
                 if raw_c > 0:
                     if branch_name in closed_branches_db:
@@ -93,6 +103,7 @@ def start_monitor():
                         patch_json(f"{FIREBASE_URL}/Global_Last_Cash.json", {branch_name: actual_c})
                         branch_cash_diffs[branch_name] = actual_c - server_last_c
                 elif raw_c == 0:
+                    is_finished = True
                     if branch_name in closed_branches_db:
                         actual_c = float(closed_branches_db[branch_name])
                     elif server_last_c > 0:
@@ -108,6 +119,44 @@ def start_monitor():
                         actual_c = 0.0
                         
                 total_cash_val += actual_c
+
+                # 💡 متابعة توقيت الفرع وتسجيل التوقف في الفايربيز ليظهر فوراً على أي هاتف أو ويب
+                last_update_str = info.get('Last_Update', '')
+                srv_b_info = server_tracker.get(branch_name, {})
+                if not isinstance(srv_b_info, dict):
+                    srv_b_info = {}
+
+                if branch_name not in branch_tracker:
+                    if srv_b_info.get("last_string") == last_update_str and "admin_time" in srv_b_info:
+                        branch_tracker[branch_name] = {
+                            "last_string": last_update_str,
+                            "admin_time": float(srv_b_info.get("admin_time", current_bot_time)),
+                            "display_time": srv_b_info.get("display_time", current_time),
+                            "is_stagnant": srv_b_info.get("is_stagnant", False)
+                        }
+                    else:
+                        branch_tracker[branch_name] = {
+                            "last_string": last_update_str,
+                            "admin_time": current_bot_time,
+                            "display_time": current_time,
+                            "is_stagnant": False
+                        }
+                        patch_json(f"{FIREBASE_URL}/Branch_Tracker/{branch_name}.json", branch_tracker[branch_name])
+                else:
+                    if last_update_str != branch_tracker[branch_name]["last_string"]:
+                        branch_tracker[branch_name] = {
+                            "last_string": last_update_str,
+                            "admin_time": current_bot_time,
+                            "display_time": current_time,
+                            "is_stagnant": False
+                        }
+                        patch_json(f"{FIREBASE_URL}/Branch_Tracker/{branch_name}.json", branch_tracker[branch_name])
+
+                diff_seconds = current_bot_time - branch_tracker[branch_name]["admin_time"]
+                is_stagnant_now = (diff_seconds >= 60) and (not is_finished)
+                if is_stagnant_now != branch_tracker[branch_name].get("is_stagnant", False):
+                    branch_tracker[branch_name]["is_stagnant"] = is_stagnant_now
+                    patch_json(f"{FIREBASE_URL}/Branch_Tracker/{branch_name}.json", branch_tracker[branch_name])
 
             # 3. مراقبة حواجز الـ 100 ألف وإرسال تنبيهات التليجرام
             fb_alert_level = get_json(f"{FIREBASE_URL}/System_Flags/Last_Alert_Level.json")
